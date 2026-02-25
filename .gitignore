@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+postgres_data/
+opensearch_data/
