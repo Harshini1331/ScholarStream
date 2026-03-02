@@ -83,22 +83,36 @@ class ArxivClient:
                 return None
 
 async def save_to_db(papers):
-    """Persists metadata to PostgreSQL with duplicate prevention."""
+    """Persists metadata and full text to PostgreSQL with an upsert strategy."""
     try:
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
         for paper in papers:
-            # ON CONFLICT ensures we don't crash on duplicate IDs
+            # We added 'content' to the columns and the values
+            # Using 'get' for content to avoid errors if it's missing from the dict
+            content_text = paper.get('content', '')
+
             cur.execute("""
-                INSERT INTO papers (title, authors, summary, arxiv_id, published_date, pdf_url)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (arxiv_id) DO NOTHING;
-            """, (paper['title'], paper['authors'], paper['summary'], 
-                  paper['arxiv_id'], paper['published_date'], paper['pdf_url']))
+                INSERT INTO papers (title, authors, summary, arxiv_id, published_date, pdf_url, content)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (arxiv_id) 
+                DO UPDATE SET 
+                    content = EXCLUDED.content,
+                    processed_at = CURRENT_TIMESTAMP;
+            """, (
+                paper['title'], 
+                paper['authors'], 
+                paper['summary'], 
+                paper['arxiv_id'], 
+                paper['published_date'], 
+                paper['pdf_url'],
+                content_text
+            ))
+            
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Successfully saved {len(papers)} papers to database!")
+        print(f"Successfully synced {len(papers)} papers to database (including full text)!")
     except Exception as e:
         print(f"Database error: {e}")
 
