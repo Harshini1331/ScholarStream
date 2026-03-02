@@ -8,6 +8,13 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    # OCR Engines
+    tesseract-ocr \
+    libtesseract-dev \
+    # OpenCV dependencies (fixes libxcb.so.1)
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv to manage our packages

@@ -9,6 +9,8 @@ services:
       POSTGRES_PASSWORD: rag_password
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Persistence for your papers
 
   opensearch:
     image: opensearchproject/opensearch:2.11.0
@@ -19,6 +21,8 @@ services:
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data # Persistence for vector embeddings
 
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:2.11.0
@@ -38,12 +42,13 @@ services:
     container_name: ss-ollama
     ports:
       - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama # Persistent storage for your downloaded LLM models
 
   # 5. Apache Airflow - Workflow automation (Port 8080)
   airflow:
     image: apache/airflow:2.7.1
     container_name: ss-airflow
-    # Added this line to tell Airflow to start all services in one container
     command: standalone
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
@@ -64,9 +69,17 @@ services:
     command: uv run uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - .:/app
+      - venv_data:/app/.venv  # PRO TIP: Isolates heavy libs in high-speed Linux memory
     environment:
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_URL=http://opensearch:9200
     depends_on:
       - postgres
       - opensearch
+
+# Define the high-performance Named Volumes
+volumes:
+  postgres_data:
+  opensearch_data:
+  ollama_data:
+  venv_data: # This manages your 164 packages natively

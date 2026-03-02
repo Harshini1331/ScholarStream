@@ -1,6 +1,27 @@
+# Python virtual environments
 .venv/
+env/
+venv/
+ENV/
+
+# Python internals and cache
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Project-specific data 
+data/
+*.pdf
 postgres_data/
 opensearch_data/
+ollama_data/
+
+# Environment secrets
+.env
+*.local
+
+# System files
+.DS_Store
+Thumbs.db

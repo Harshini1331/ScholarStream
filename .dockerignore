@@ -1,0 +1,23 @@
+# Dependency folders
+.venv/
+node_modules/
+
+# Local data and model weights
+data/
+models/
+*.pdf
+*.log
+
+# Python internals
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# System and Git
+.git/
+.gitignore
+.dockerignore
+.DS_Store
