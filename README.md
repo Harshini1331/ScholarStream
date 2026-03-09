@@ -1,249 +1,194 @@
 # ScholarStream
 
-A production-ready RAG (Retrieval-Augmented Generation) ingestion pipeline for scientific papers. ScholarStream automates the process of fetching academic papers from arXiv, parsing PDFs with GPU acceleration, and storing structured content in PostgreSQL and OpenSearch for intelligent retrieval.
+**Production-grade RAG pipeline for scientific literature** — arXiv ingestion, GPU-accelerated PDF parsing, hybrid vector search, agentic query routing, and real-time streaming answers.
 
-## Features
+> Built with: Python 3.12 · FastAPI · LangChain · LangGraph · OpenSearch · Ollama · Airflow · Redis · Langfuse · Docker
 
-- **arXiv Integration** - Fetch paper metadata and PDFs directly from arXiv with rate limiting and caching
-- **GPU-Accelerated PDF Parsing** - Extract structured text from PDFs using Docling with NVIDIA GPU support
-- **Dual Storage Architecture** - PostgreSQL for metadata persistence, OpenSearch for full-text search
-- **BM25 Search Index** - Optimized OpenSearch mappings for academic paper retrieval
-- **Local LLM Support** - Ollama integration for GPU-accelerated inference
-- **Workflow Automation** - Apache Airflow for scheduling and orchestrating pipelines
-- **FastAPI Backend** - REST API for programmatic access to the pipeline
+---
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph Ingestion["Data Ingestion Pipeline (Airflow @daily)"]
+        A[arXiv API]:::orange -->|fetch metadata + PDFs| B["Docling PDF Parser<br/>GPU-accelerated · RTX 5070"]:::blue
+        B -->|structured Markdown| C["Semantic Chunker<br/>MarkdownHeader + Recursive"]:::blue
+        C -->|nomic-embed-text| D["Vector Embeddings<br/>768d · Ollama"]:::blue
+        D -->|store| E[("OpenSearch 2.11<br/>arxiv-papers · BM25 + KNN")]:::green
+        B -->|full text + metadata| F[("PostgreSQL 16<br/>papers table")]:::green
+    end
+
+    subgraph Serving["RAG Serving Layer - FastAPI"]
+        G[User Query]:::orange -->|lookup| H["Redis Cache<br/>SHA-256 · 24h TTL"]:::blue
+        H -->|cache hit ~100ms| R[Response]:::orange
+        H -->|cache miss · embedding| I["Hybrid Search<br/>BM25 + KNN via RRF"]:::blue
+        E -.->|retrieve chunks| I
+        I -->|retrieved context| J["Llama 3 · Local LLM<br/>Ollama"]:::orange
+        J -->|reasoning| R
+        J -->|span tracing| Q["Langfuse<br/>Observability"]:::blue
+    end
+
+    subgraph Agentic["Agentic RAG - LangGraph"]
+        G2[User Query]:::orange --> L{"Decide Node<br/>Llama 3"}:::blue
+        L -->|simple question| M[Direct Answer]:::orange
+        L -->|research needed| N["Retrieve · Grade · Generate"]:::blue
+        N -->|not relevant| O["Rewrite Query<br/>max 2 retries"]:::blue
+        O --> N
+        N -->|relevant| P["Final Answer +<br/>Reasoning Steps"]:::orange
+    end
+
+    classDef blue fill:#5bb8f5,color:#0a0a0f,stroke:#3a9fd9
+    classDef orange fill:#f5a623,color:#0a0a0f,stroke:#d4891a
+    classDef green fill:#6dbf8a,color:#0a0a0f,stroke:#4aa36b
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│     arXiv       │────▶│  PDF Parser     │────▶│   PostgreSQL    │
-│   (Metadata)    │     │   (Docling)     │     │   (Metadata)    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                        ┌─────────────────┐
-                        │   OpenSearch    │
-                        │  (Full-Text)    │
-                        └─────────────────┘
+
+---
+
+## Agentic RAG Workflow
+
+```mermaid
+flowchart TD
+    START(["User Query"]):::yellow --> D{"Decide Node<br/>LLM routes query"}:::blue
+    D -->|simple / off-topic| DIRECT["Direct Answer<br/>~2-5s"]:::orange
+    D -->|research needed| RET["Retrieve<br/>Hybrid Search"]:::blue
+    RET --> GRADE{"grade_documents<br/>per-chunk relevance"}:::purple
+    GRADE -->|relevant chunks found| GEN["generate_answer<br/>Llama 3 · ≤300 words"]:::green
+    GRADE -->|not relevant| RW["rewrite_query<br/>LLM reformulates"]:::orange
+    RW -->|retry, max 2x| RET
+    GEN --> END_(["Answer + Sources +<br/>Reasoning Steps"]):::yellow
+    DIRECT --> END_
+
+    classDef yellow fill:#f5e6a3,color:#0a0a0f,stroke:#d4c56a
+    classDef blue fill:#5bb8f5,color:#0a0a0f,stroke:#3a9fd9
+    classDef orange fill:#f5a623,color:#0a0a0f,stroke:#d4891a
+    classDef purple fill:#c9b8f5,color:#0a0a0f,stroke:#9b85d9
+    classDef green fill:#6dbf8a,color:#0a0a0f,stroke:#4aa36b
 ```
 
-## Tech Stack
+---
 
-| Component | Technology |
-|-----------|------------|
-| Language | Python 3.12 |
-| PDF Parsing | Docling (GPU-accelerated) |
-| Metadata DB | PostgreSQL 16 |
-| Search Engine | OpenSearch 2.11 |
-| Local LLM | Ollama |
-| Workflow | Apache Airflow |
-| API Framework | FastAPI + Uvicorn |
-| Package Manager | uv |
-| Containerization | Docker + NVIDIA CUDA |
+## What's Inside
 
-## Prerequisites
+| Feature | Implementation |
+|---|---|
+| **PDF Parsing** | Docling with GPU acceleration (RTX 5070) — preserves document structure as Markdown |
+| **Semantic Chunking** | Two-stage: MarkdownHeaderTextSplitter → RecursiveCharacterTextSplitter (1500 chars, 150 overlap) |
+| **Vector Embeddings** | `nomic-embed-text` via Ollama — 768-dimensional, fully local |
+| **Hybrid Search** | Manual Reciprocal Rank Fusion (BM25 + KNN) — OpenSearch 2.11 compatible |
+| **Agentic RAG** | LangGraph state machine: decide → retrieve → grade → rewrite → generate |
+| **Streaming** | Server-Sent Events (SSE) with token-by-token output |
+| **Caching** | Redis — SHA-256 keyed, 24h TTL, 150–400x speedup on cache hits |
+| **Observability** | Langfuse v3 — span tracing for embed, retrieve, and generate steps |
+| **Scheduling** | Apache Airflow 3.1.7 — `@daily` arXiv ingestion DAG |
+| **Local LLM** | Llama 3 via Ollama — zero API costs, fully offline capable |
 
-- Docker & Docker Compose
-- NVIDIA GPU with CUDA support
-- NVIDIA Container Toolkit
-- Python 3.12 (for local development)
+---
+
+## Performance
+
+| Scenario | Response Time |
+|---|---|
+| Cache hit (Redis) | ~100ms |
+| Standard RAG (`/ask`) | 15–20s |
+| Streaming RAG (`/stream`) | 2–3s to first token |
+| Agentic — direct response | ~2–5s (no retrieval) |
+| Agentic — full pipeline | 20–30s |
+
+---
+
+## Services
+
+```
+ss-postgres      PostgreSQL 16         :5432   Paper metadata + full text
+ss-opensearch    OpenSearch 2.11.0     :9200   BM25 + KNN vector index (3,700+ chunks)
+ss-dashboards    OpenSearch Dashboards :5601   Search index UI
+ss-ollama        Ollama                :11434  Local LLM inference (GPU)
+ss-airflow       Apache Airflow 3.1.7  :8080   Daily ingestion scheduler
+ss-redis         Redis 7 Alpine        :6379   Response cache
+ss-api           FastAPI + Uvicorn     :8000   RAG serving layer + UI
+```
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/ask` | Full RAG Q&A with caching and Langfuse tracing |
+| `POST` | `/stream` | SSE streaming RAG — token-by-token output |
+| `POST` | `/ask-agentic` | Agentic RAG via LangGraph with reasoning steps |
+| `POST` | `/hybrid-search` | BM25 + KNN hybrid search (RRF fusion) |
+| `GET/POST` | `/search` | BM25 keyword search with highlights |
+| `GET` | `/ui` | Browser UI (served from `scholarstream_ui.html`) |
+| `GET` | `/health` | API, OpenSearch, Redis, and Langfuse status |
+| `GET` | `/stats` | Index document count and size |
+| `POST` | `/cache/flush` | Clear all Redis cache entries |
+
+---
 
 ## Quick Start
 
-### 1. Clone the Repository
-
 ```bash
-git clone https://github.com/Harshini1331/ScholarStream.git
+# 1. Clone and configure
+git clone https://github.com/harshini1331/ScholarStream
 cd ScholarStream
+cp .env.example .env   # add your Langfuse keys
+
+# 2. Start all services
+docker compose up --build -d
+
+# 3. Ingest landmark ML papers (one-time)
+docker exec ss-api /opt/venv/bin/python ingest_landmarks.py
+
+# 4. Open the UI
+open http://localhost:8000/ui
 ```
-
-### 2. Start Infrastructure Services
-
-```bash
-docker compose up -d
-```
-
-This starts:
-- **PostgreSQL** on port `5432`
-- **OpenSearch** on port `9200`
-- **OpenSearch Dashboards** on port `5601`
-- **Ollama** on port `11434`
-- **Airflow** on port `8080`
-- **FastAPI** on port `8000`
-
-### 3. Initialize the Database
-
-```bash
-docker compose exec api uv run python init_db.py
-```
-
-### 4. Initialize OpenSearch Index
-
-```bash
-docker compose exec api uv run python init_os.py
-```
-
-### 5. Run the Ingestion Pipeline
-
-```bash
-docker compose exec api uv run python ingest.py
-```
-
-## Project Structure
-
-```
-ScholarStream/
-├── arxiv_client.py      # arXiv API client with PDF downloading
-├── pdf_parser.py        # GPU-accelerated PDF to Markdown conversion
-├── opensearch_service.py # OpenSearch indexing and search
-├── init_db.py           # PostgreSQL schema initialization
-├── init_os.py           # OpenSearch index setup
-├── ingest.py            # Main ingestion pipeline orchestrator
-├── compose.yml          # Docker Compose configuration
-├── Dockerfile           # CUDA-enabled container image
-├── pyproject.toml       # Project dependencies
-└── README.md
-```
-
-## Components
-
-### arXiv Client (`arxiv_client.py`)
-
-Handles interaction with the arXiv API:
-- Fetches paper metadata with configurable queries and date ranges
-- Downloads PDFs with local caching for idempotency
-- Persists data to PostgreSQL with upsert strategy
-
-```python
-client = ArxivClient()
-papers = await client.fetch_papers(query="cat:cs.AI", max_results=5)
-pdf_path = await client.download_pdf(papers[0])
-```
-
-### PDF Parser (`pdf_parser.py`)
-
-Converts PDFs to structured Markdown using Docling:
-- Preserves document structure (headings, tables)
-- Optimized for RAG chunking
-- GPU-accelerated processing
-
-```python
-parser = PaperParser()
-markdown_content = parser.parse_pdf(pdf_path)
-```
-
-### OpenSearch Service (`opensearch_service.py`)
-
-Manages the search index:
-- BM25-optimized index mappings
-- Full-text search on titles, summaries, and content
-- Keyword search on authors and arXiv IDs
-
-```python
-os_service = OpenSearchService()
-os_service.create_index()
-os_service.index_paper(paper_dict)
-```
-
-## Configuration
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://rag_user:rag_password@postgres:5432/rag_db` | PostgreSQL connection string |
-| `OPENSEARCH__HOST` | `http://opensearch:9200` | OpenSearch host URL |
-| `OPENSEARCH__INDEX_NAME` | `arxiv-papers` | OpenSearch index name |
-
-### Database Schema
-
-```sql
-CREATE TABLE papers (
-    id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    authors TEXT[],
-    summary TEXT,
-    arxiv_id VARCHAR(20) UNIQUE,
-    published_date TIMESTAMP,
-    pdf_url TEXT,
-    content TEXT,
-    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+```bash
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+REDIS__TTL_HOURS=24
 ```
 
-## Local Development
+---
 
-### Install Dependencies
+## Example Queries
 
 ```bash
-# Install uv package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Standard RAG
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How does DDPM generate images?", "top_k": 5}'
 
-# Install project dependencies
-uv sync
+# Streaming
+curl -X POST http://localhost:8000/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Explain the attention mechanism", "top_k": 3}' \
+  --no-buffer
+
+# Agentic RAG
+curl -X POST http://localhost:8000/ask-agentic \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What makes LLaMA different from GPT-3?", "top_k": 4}'
 ```
 
-### Run Individual Components
+---
 
-```bash
-# Test arXiv client
-uv run python arxiv_client.py
+## Corpus
 
-# Test PDF parser
-uv run python pdf_parser.py
+The index ships with **3,700+ semantic chunks** from:
+- Foundational papers: Attention Is All You Need, BERT, GPT-3, LLaMA 1/2, Mistral
+- Diffusion models: DDPM, Latent Diffusion Models, DALL-E 2
+- RAG papers: original RAG (Lewis et al.), Atlas, Self-RAG
+- Vision: ViT, CLIP, SAM
+- Agents: ReAct, Tree of Thoughts
+- Recent arXiv papers across LLMs, Computer Vision, and Diffusion
 
-# Initialize database
-uv run python init_db.py
+---
 
-# Initialize OpenSearch
-uv run python init_os.py
+## Tech Stack
 
-# Run full pipeline
-uv run python ingest.py
-```
-
-## Docker Services
-
-| Service | Port | Description |
-|---------|------|-------------|
-| `ss-postgres` | 5432 | PostgreSQL database |
-| `ss-opensearch` | 9200 | OpenSearch search engine |
-| `ss-dashboards` | 5601 | OpenSearch Dashboards UI |
-| `ss-ollama` | 11434 | Ollama LLM server |
-| `ss-airflow` | 8080 | Airflow web interface |
-| `ss-api` | 8000 | FastAPI application |
-
-## GPU Support
-
-The project is optimized for NVIDIA GPUs:
-
-- **Dockerfile** uses `nvidia/cuda:12.4.1-runtime-ubuntu22.04` base image
-- **Docling** leverages GPU for document layout analysis
-- **Ollama** uses GPU for LLM inference
-
-Ensure the NVIDIA Container Toolkit is installed:
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install -y nvidia-container-toolkit
-sudo systemctl restart docker
-```
-
-## Dependencies
-
-Core Python packages:
-- `arxiv` - arXiv API client
-- `docling` - PDF parsing and document intelligence
-- `fastapi` + `uvicorn` - Web framework
-- `langchain` + `langchain-ollama` - LLM orchestration
-- `opensearch-py` - OpenSearch client
-- `psycopg2-binary` - PostgreSQL adapter
-- `httpx` - Async HTTP client
-
-## License
-
-This project is open source. See the repository for license details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+`Python 3.12` `FastAPI` `LangChain` `LangGraph` `OpenSearch` `PostgreSQL` `Ollama` `Llama 3` `nomic-embed-text` `Apache Airflow` `Redis` `Langfuse` `Docling` `Docker` `NVIDIA CUDA 12.4`

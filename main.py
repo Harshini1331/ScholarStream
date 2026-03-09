@@ -1,14 +1,16 @@
 import os
+import json
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from opensearch_service import OpenSearchService
+from cache_service import CacheService
+from langfuse_service import TracingService
 
-
-# ---------------------------------------------------------------------------
-# App Lifespan
-# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -17,27 +19,21 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# ---------------------------------------------------------------------------
-# Service Initialization
-# ---------------------------------------------------------------------------
-
 os_service = OpenSearchService()
+cache = CacheService()
+tracer = TracingService()
 
-embeddings_model = OllamaEmbeddings(
-    model="nomic-embed-text",
-    base_url="http://ollama:11434"
-)
-llm = ChatOllama(
-    model="llama3",
-    base_url="http://ollama:11434"
-)
+embeddings_model = OllamaEmbeddings(model="nomic-embed-text", base_url="http://ollama:11434")
+llm = ChatOllama(model="llama3", base_url="http://ollama:11434")
 
 app = FastAPI(title="ScholarStream RAG API", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ---------------------------------------------------------------------------
-# Request Models
-# ---------------------------------------------------------------------------
+@app.get("/ui")
+async def serve_ui():
+    return FileResponse("scholarstream_ui.html")
+
 
 class SearchRequest(BaseModel):
     query: str
@@ -45,189 +41,225 @@ class SearchRequest(BaseModel):
     from_: int = 0
     arxiv_id_filter: str = None
 
-
 class HybridSearchRequest(BaseModel):
     query: str
     size: int = 10
-    rrf_k: int = 60          # RRF constant — 60 is standard from original paper
-
+    rrf_k: int = 60
 
 class AskRequest(BaseModel):
     question: str
     top_k: int = 4
-    use_hybrid: bool = True  # Use hybrid search for context retrieval by default
+    use_hybrid: bool = True
+
+class StreamRequest(BaseModel):
+    question: str
+    top_k: int = 3
+    use_hybrid: bool = True
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+def _retrieve_context(question: str, top_k: int, use_hybrid: bool):
+    t0 = time.time()
+    query_vector = embeddings_model.embed_query(question)
+    embed_time = round(time.time() - t0, 3)
+
+    t1 = time.time()
+    if use_hybrid:
+        hits = os_service.hybrid_search(query=question, query_vector=query_vector, size=top_k)["results"]
+        chunks = [{"title": h["title"], "section": h["section"], "content": h.get("summary") or ""} for h in hits]
+    else:
+        resp = os_service.client.search(index=os_service.index_name, body={
+            "size": top_k,
+            "query": {"knn": {"embedding": {"vector": query_vector, "k": top_k}}},
+            "_source": ["content", "title", "section"]
+        })
+        chunks = [{"title": h["_source"].get("title"), "section": h["_source"].get("section"), "content": h["_source"].get("content", "")} for h in resp["hits"]["hits"]]
+    retrieve_time = round(time.time() - t1, 3)
+
+    if not chunks:
+        return None, [], embed_time, retrieve_time
+
+    segments, sources = [], []
+    for c in chunks:
+        src = f"{c['title']} (Section: {c['section']})"
+        segments.append(f"Source: {src}\nContent: {c['content']}")
+        sources.append(src)
+    return "\n\n---\n\n".join(segments), list(set(sources)), embed_time, retrieve_time
+
+
+def _build_prompt(question: str, context: str) -> str:
+    return (
+        "You are a research assistant. Answer based ONLY on the context below.\n"
+        "Be concise — maximum 300 words.\n\n"
+        f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
+    )
+
 
 @app.get("/health")
 async def health_check():
-    """Service health + OpenSearch connectivity."""
-    return {
-        "status": "online",
-        "opensearch": os_service.health_check()
-    }
+    return {"status": "online", "opensearch": os_service.health_check(), "cache": cache.stats(), "tracing": tracer.enabled}
 
+@app.post("/cache/flush")
+async def flush_cache():
+    return {"deleted": cache.flush_all()}
 
 @app.get("/stats")
 async def index_stats():
-    """OpenSearch index document count and size."""
     return os_service.get_index_stats()
 
-
 @app.get("/search")
-async def search_get(
-    q: str = Query(..., description="Search query string"),
-    size: int = Query(10, description="Number of results"),
-    from_: int = Query(0, description="Pagination offset"),
-    arxiv_id: str = Query(None, description="Filter by arxiv_id")
-):
-    """
-    Simple BM25 keyword search via GET.
-    Example: GET /search?q=large+language+models&size=5
-    Supports short queries: /search?q=AI
-    """
+async def search_get(q: str = Query(...), size: int = Query(10), from_: int = Query(0), arxiv_id: str = Query(None)):
     try:
-        return os_service.bm25_search(
-            query=q,
-            size=size,
-            from_=from_,
-            arxiv_id_filter=arxiv_id
-        )
+        return os_service.bm25_search(query=q, size=size, from_=from_, arxiv_id_filter=arxiv_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/search")
 async def search_post(request: SearchRequest):
-    """
-    Advanced BM25 search via POST.
-    Field boosting: title^3, summary^2, content^1.
-    Supports fuzzy matching, highlighting, pagination.
-    """
     try:
-        return os_service.bm25_search(
-            query=request.query,
-            size=request.size,
-            from_=request.from_,
-            arxiv_id_filter=request.arxiv_id_filter
-        )
+        return os_service.bm25_search(query=request.query, size=request.size, from_=request.from_, arxiv_id_filter=request.arxiv_id_filter)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/hybrid-search")
 async def hybrid_search(request: HybridSearchRequest):
-    """
-    Hybrid search using manual RRF (Reciprocal Rank Fusion).
-    Combines BM25 keyword precision + KNN semantic recall.
-
-    Both searches run in parallel, then results are fused using:
-        rrf_score = 1/(rrf_k + bm25_rank) + 1/(rrf_k + knn_rank)
-
-    Docs appearing in both result sets get the highest scores.
-    rrf_k=60 is the standard constant from the original RRF paper.
-    """
     try:
-        # Embed the query for KNN search
-        query_vector = embeddings_model.embed_query(request.query)
-
-        return os_service.hybrid_search(
-            query=request.query,
-            query_vector=query_vector,
-            size=request.size,
-            rrf_k=request.rrf_k
-        )
+        qv = embeddings_model.embed_query(request.query)
+        return os_service.hybrid_search(query=request.query, query_vector=qv, size=request.size, rrf_k=request.rrf_k)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/ask")
 async def ask_paper(request: AskRequest):
-    """
-    RAG Q&A endpoint.
+    t0 = time.time()
+    cached = cache.get(request.question, request.top_k, request.use_hybrid)
+    if cached:
+        cached["cache_hit"] = True
+        tracer.trace_ask(question=request.question, answer=cached["answer"], sources=cached["sources"],
+                         top_k=request.top_k, use_hybrid=request.use_hybrid, cache_hit=True,
+                         response_time_s=round(time.time() - t0, 3))
+        return cached
 
-    Flow:
-      1. Embed question via nomic-embed-text
-      2. Retrieve context via hybrid search (RRF) or KNN only
-      3. Build augmented prompt with retrieved chunks
-      4. Generate grounded answer via Llama 3
-    """
     try:
-        query_vector = embeddings_model.embed_query(request.question)
+        context, sources, embed_t, retrieve_t = _retrieve_context(request.question, request.top_k, request.use_hybrid)
+        if not context:
+            raise HTTPException(status_code=404, detail="No relevant context found.")
 
-        if request.use_hybrid:
-            # Use hybrid RRF search for best context retrieval
-            hybrid_results = os_service.hybrid_search(
-                query=request.question,
-                query_vector=query_vector,
-                size=request.top_k
-            )
-            hits = hybrid_results["results"]
-            context_chunks = [
-                {
-                    "_source": {
-                        "title": h["title"],
-                        "section": h["section"],
-                        "content": h.get("summary") or ""
-                    }
-                }
-                for h in hits
-            ]
-        else:
-            # Fallback: pure KNN search
-            knn_body = {
-                "size": request.top_k,
-                "query": {
-                    "knn": {
-                        "embedding": {
-                            "vector": query_vector,
-                            "k": request.top_k
-                        }
-                    }
-                },
-                "_source": ["content", "title", "section", "pdf_url"]
-            }
-            response = os_service.client.search(
-                index=os_service.index_name,
-                body=knn_body
-            )
-            context_chunks = response["hits"]["hits"]
+        t_gen = time.time()
+        answer = llm.invoke(_build_prompt(request.question, context))
+        gen_t = round(time.time() - t_gen, 3)
+        total_t = round(time.time() - t0, 3)
 
-        if not context_chunks:
-            raise HTTPException(
-                status_code=404,
-                detail="No relevant context found for this question."
-            )
+        resp = {"answer": answer.content, "sources": sources,
+                "search_mode": "hybrid" if request.use_hybrid else "vector",
+                "response_time_s": total_t, "cache_hit": False}
 
-        # Build augmented prompt
-        context_segments = []
-        sources = []
-        for hit in context_chunks:
-            src = hit["_source"]
-            source_info = f"Source: {src.get('title')} (Section: {src.get('section')})"
-            context_segments.append(f"{source_info}\nContent: {src.get('content', '')}")
-            sources.append(source_info)
-
-        context_text = "\n\n---\n\n".join(context_segments)
-        prompt = (
-            "You are a research assistant. Answer the question based ONLY on the provided context.\n\n"
-            f"Context:\n{context_text}\n\n"
-            f"Question: {request.question}\n\n"
-            "Answer:"
-        )
-
-        answer = llm.invoke(prompt)
-
-        return {
-            "answer": answer.content,
-            "sources": list(set(sources)),
-            "search_mode": "hybrid" if request.use_hybrid else "vector"
-        }
-
+        cache.set(request.question, request.top_k, request.use_hybrid, resp)
+        tracer.trace_ask(question=request.question, answer=answer.content, sources=sources,
+                         top_k=request.top_k, use_hybrid=request.use_hybrid, cache_hit=False,
+                         response_time_s=total_t, embed_time_s=embed_t,
+                         retrieve_time_s=retrieve_t, generate_time_s=gen_t)
+        return resp
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/stream")
+async def stream_answer(request: StreamRequest):
+    t0 = time.time()
+    cached = cache.get(request.question, request.top_k, request.use_hybrid)
+    if cached:
+        tracer.trace_stream(question=request.question, answer=cached["answer"], sources=cached["sources"],
+                            top_k=request.top_k, use_hybrid=request.use_hybrid, cache_hit=True,
+                            response_time_s=round(time.time() - t0, 3))
+        def replay():
+            yield f"data: {json.dumps({'token': cached['answer']})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'sources': cached['sources'], 'cache_hit': True})}\n\n"
+        return StreamingResponse(replay(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    try:
+        context, sources, _, _ = _retrieve_context(request.question, request.top_k, request.use_hybrid)
+        if not context:
+            raise HTTPException(status_code=404, detail="No relevant context found.")
+
+        prompt = _build_prompt(request.question, context)
+
+        def token_generator():
+            tokens = []
+            try:
+                for chunk in llm.stream(prompt):
+                    if chunk.content:
+                        tokens.append(chunk.content)
+                        yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+
+                answer = "".join(tokens)
+                total_t = round(time.time() - t0, 3)
+                cache.set(request.question, request.top_k, request.use_hybrid,
+                          {"answer": answer, "sources": sources,
+                           "search_mode": "hybrid" if request.use_hybrid else "vector",
+                           "response_time_s": total_t})
+                tracer.trace_stream(question=request.question, answer=answer, sources=sources,
+                                    top_k=request.top_k, use_hybrid=request.use_hybrid,
+                                    cache_hit=False, response_time_s=total_t)
+                yield f"data: {json.dumps({'done': True, 'sources': sources, 'cache_hit': False})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(token_generator(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------------------------
+# Agentic RAG
+# ---------------------------------------------------------------------------
+
+import agentic_rag as _agentic_rag
+
+# Agentic RAG uses llama3 (no tool calling needed)
+_agentic_rag.init_services(embeddings_model, llm, os_service)
+
+
+class AgenticAskRequest(BaseModel):
+    query: str
+    top_k: int = 3
+    use_hybrid: bool = True
+
+
+@app.post("/ask-agentic")
+async def ask_agentic(request: AgenticAskRequest):
+    """
+    Agentic RAG endpoint using LangGraph.
+
+    The agent decides whether to:
+    - Respond directly (simple/off-topic questions)
+    - Retrieve papers → grade relevance → generate answer
+    - Rewrite query and retry if documents aren't relevant
+
+    Returns reasoning_steps showing the agent's decision trail.
+    """
+    try:
+        t0 = time.time()
+
+        # Check cache first
+        cached = cache.get(request.query, request.top_k, request.use_hybrid)
+        if cached and "reasoning_steps" in cached:
+            cached["cache_hit"] = True
+            return cached
+
+        result = _agentic_rag.run_agentic_rag(query=request.query, top_k=request.top_k)
+        result["query"] = request.query
+        result["response_time_s"] = round(time.time() - t0, 3)
+        result["cache_hit"] = False
+
+        # Cache the result
+        cache.set(request.query, request.top_k, request.use_hybrid, result)
+
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

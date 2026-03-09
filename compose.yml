@@ -53,7 +53,7 @@ services:
     image: ollama/ollama
     container_name: ss-ollama
     environment:
-      - OLLAMA_NUM_PARALLEL=4 
+      - OLLAMA_NUM_PARALLEL=4
       - OLLAMA_MAX_LOADED_MODELS=2
     ports:
       - "11434:11434"
@@ -67,7 +67,20 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # 5. Apache Airflow - Scheduled Ingestion
+  # 5. Redis - Response Cache
+  redis:
+    image: redis:7-alpine
+    container_name: ss-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 6. Apache Airflow - Scheduled Ingestion
   airflow:
     build: .
     image: scholar-stream-app:latest
@@ -81,6 +94,12 @@ services:
       - AIRFLOW_HOME=/opt/airflow
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_URL=http://opensearch:9200
+      - REDIS__HOST=redis
+      - REDIS__PORT=6379
+      - REDIS__TTL_HOURS=24
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL}
     ports:
       - "8080:8080"
     volumes:
@@ -98,7 +117,7 @@ services:
       postgres:
         condition: service_healthy
 
-  # 6. FastAPI - RAG Serving Layer
+  # 7. FastAPI - RAG Serving Layer
   api:
     build: .
     image: scholar-stream-app:latest
@@ -112,6 +131,12 @@ services:
     environment:
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_URL=http://opensearch:9200
+      - REDIS__HOST=redis
+      - REDIS__PORT=6379
+      - REDIS__TTL_HOURS=24
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL}
     deploy:
       resources:
         reservations:
@@ -123,6 +148,8 @@ services:
       postgres:
         condition: service_healthy
       opensearch:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

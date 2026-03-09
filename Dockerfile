@@ -62,7 +62,9 @@ RUN uv pip install --python /opt/venv/bin/python \
     "uvicorn>=0.41.0" \
     "fastapi>=0.116.0,<0.118.0" \
     "grpcio!=1.78.1" \
-    "asyncpg>=0.29.0"
+    "asyncpg>=0.29.0" \
+    "redis>=5.0.0" \
+    "langfuse>=2.0.0"
 
 # Copy the rest of the code
 COPY . .
