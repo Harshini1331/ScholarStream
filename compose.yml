@@ -1,5 +1,5 @@
 services:
-  # 1. PostgreSQL - Paper metadata storage (Port 5432)
+  # 1. PostgreSQL - Metadata & Airflow Backend
   postgres:
     image: postgres:16-alpine
     container_name: ss-postgres
@@ -17,7 +17,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # 2. OpenSearch - Vector database
+  # 2. OpenSearch - Vector Database
   opensearch:
     image: opensearchproject/opensearch:2.11.0
     container_name: ss-opensearch
@@ -29,7 +29,13 @@ services:
       - "9200:9200"
     volumes:
       - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health?local=true"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # 3. OpenSearch Dashboards - Visualization UI
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:2.11.0
     container_name: ss-dashboards
@@ -42,7 +48,7 @@ services:
     depends_on:
       - opensearch
 
-  # 4. Ollama - GPU Accelerated Local LLM
+  # 4. Ollama - GPU Accelerated Inference (RTX 5070)
   ollama:
     image: ollama/ollama
     container_name: ss-ollama
@@ -58,37 +64,51 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # 5. Apache Airflow - Workflow automation
+  # 5. Apache Airflow - Scheduled Ingestion
   airflow:
-    image: apache/airflow:2.7.1
+    build: .
+    image: scholar-stream-app:latest
     container_name: ss-airflow
-    command: standalone
+    command: /opt/venv/bin/airflow standalone
+    user: "0:0"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW_HOME=/opt/airflow
+      - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
+      - OPENSEARCH_URL=http://opensearch:9200
     ports:
       - "8080:8080"
+    volumes:
+      - .:/app
+      - ./dags:/opt/airflow/dags
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
 
-  # 6. FastAPI - GPU Accelerated PDF Parsing & API
+  # 6. FastAPI - RAG Serving Layer
   api:
     build: .
     image: scholar-stream-app:latest
     container_name: ss-api
     ports:
       - "8000:8000"
-    # Note: main:app assumes you have a main.py with a FastAPI 'app' instance
-    command: uv run uvicorn main:app --host 0.0.0.0 --port 8000
+    command: /opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - .:/app
-      - venv_data:/app/.venv
+      - ./data:/app/data
     environment:
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_URL=http://opensearch:9200
-    # This block allows Docling to use your RTX 5070 for parsing
     deploy:
       resources:
         reservations:
@@ -100,11 +120,9 @@ services:
       postgres:
         condition: service_healthy
       opensearch:
-        condition: service_started
+        condition: service_healthy
 
-# Define the high-performance Named Volumes
 volumes:
   postgres_data:
   opensearch_data:
   ollama_data:
-  venv_data:

@@ -83,13 +83,12 @@ class ArxivClient:
                 return None
 
 async def save_to_db(papers):
-    """Persists metadata and full text to PostgreSQL with an upsert strategy."""
+    """Persists metadata to PostgreSQL with an upsert strategy."""
     try:
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
         for paper in papers:
-            # We added 'content' to the columns and the values
-            # Using 'get' for content to avoid errors if it's missing from the dict
+            # We explicitly handle the 'content' field for the upsert logic
             content_text = paper.get('content', '')
 
             cur.execute("""
@@ -108,52 +107,30 @@ async def save_to_db(papers):
                 paper['pdf_url'],
                 content_text
             ))
-            
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Successfully synced {len(papers)} papers to database (including full text)!")
+        print(f"Successfully synced {len(papers)} papers to database!")
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"Database error during sync: {e}")
 
-async def main():
-    client = ArxivClient()
-    
-    # Use a specific ID from 2023 or 2024 to test the download logic
-    # '2312.05611' is a well-known paper on RAG
-    search = arxiv.Search(id_list=["2312.05611"])
-    results = list(client.client.results(search))
-    
-    if results:
-        paper = {
-            "title": results[0].title,
-            "authors": [a.name for a in results[0].authors],
-            "summary": results[0].summary,
-            "arxiv_id": results[0].entry_id.split('/')[-1],
-            "published_date": results[0].published,
-            "pdf_url": results[0].pdf_url
-        }
-        await save_to_db([paper])
-        await client.download_pdf(paper)
-'''
 async def main():
     """Week 2 Integration Test: Fetch, Download, and Save."""
     client = ArxivClient()
     
-    # 1. Test targeted date range (last 48 hours)
-    start_date = (datetime.now() - timedelta(days=2)).strftime("%Y%m%d%H%M")
-    end_date = datetime.now().strftime("%Y%m%d%H%M")
-    
-    #results = await client.fetch_papers(from_date=start_date, to_date=end_date, max_results=3)
+    # 1. Fetch the 3 most recent papers
+    # Using 'await' ensures 'results' is a list, not a Coroutine object
     results = await client.fetch_papers(max_results=3)   
 
-    if results:
+    if results and len(results) > 0:
         # 2. Save metadata to DB
         await save_to_db(results)
         
-        # 3. Test PDF Download and Caching for the first result
+        # 3. Download only the first PDF to save bandwidth
         await client.download_pdf(results[0])
-'''
+    else:
+        print("No papers found matching the criteria.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

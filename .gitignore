@@ -24,4 +24,7 @@ ollama_data/
 
 # System files
 .DS_Store
-Thumbs.db
+Thumbs.dbairflow/
+logs/
+
+memory.md
