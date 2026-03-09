@@ -52,6 +52,9 @@ services:
   ollama:
     image: ollama/ollama
     container_name: ss-ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=4 
+      - OLLAMA_MAX_LOADED_MODELS=2
     ports:
       - "11434:11434"
     volumes:
