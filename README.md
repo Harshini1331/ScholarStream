@@ -192,3 +192,17 @@ The index ships with **3,700+ semantic chunks** from:
 ## Tech Stack
 
 `Python 3.12` `FastAPI` `LangChain` `LangGraph` `OpenSearch` `PostgreSQL` `Ollama` `Llama 3` `nomic-embed-text` `Apache Airflow` `Redis` `Langfuse` `Docling` `Docker` `NVIDIA CUDA 12.4`
+---
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Streaming UI](screenshots/ask_stream.png) | ![Search Papers](screenshots/search_papers.png) |
+| **Streaming Q&A** — real-time SSE token output with sources | **Search Papers** — hybrid BM25 + KNN results |
+| ![System Stats](screenshots/system_stats.png) | ![Airflow](screenshots/airflow.png) |
+| **System Health** — all services live, 3,782 chunks indexed | **Airflow** — daily DAG runs, 0 failures |
+| ![Langfuse 1](screenshots/langfuse_1.png) | ![Langfuse 2](screenshots/langfuse_2.png) |
+| **Langfuse** — embed → retrieve → generate spans | **Langfuse** — DDPM query trace with sources |
+| ![OpenSearch](screenshots/opensearch.png) | ![Agentic RAG](screenshots/agentic_rag_workflow.png) |
+| **OpenSearch** — arxiv-papers index, 3,782 docs | **Agentic RAG Workflow** — LangGraph decision flow |
