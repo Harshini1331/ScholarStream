@@ -1,10 +1,52 @@
 # ScholarStream
 
-**Production-grade RAG pipeline for scientific literature** — arXiv ingestion, GPU-accelerated PDF parsing, hybrid vector search, agentic query routing, and real-time streaming answers.
+**A fully local, observable, agentic RAG system for ML research papers.**
 
-> Built with: Python 3.12 · FastAPI · LangChain · LangGraph · OpenSearch · Ollama · Airflow · Redis · Langfuse · Docker
+> Zero API cost · Hybrid BM25 + KNN search · Agentic query routing · 
+> Real-time streaming · Langfuse observability · Daily Airflow ingestion
+
+**Stack:** Python 3.12 · FastAPI · LangChain · LangGraph · OpenSearch · 
+Ollama · Airflow · Redis · Langfuse · Docker · NVIDIA CUDA 12.4
 
 ---
+
+## What Is This?
+
+Ask it a question, *"How does DDPM generate images?"*  and it retrieves 
+relevant chunks from 3,700+ indexed ML paper sections, reasons over them, 
+and returns a grounded answer with citations to the exact sections it used.
+
+Runs entirely on your machine. No OpenAI key. No Google account. Every 
+component, LLM, embeddings, vector index, cache, scheduler is 
+self-hosted and starts with one command.
+
+## Why "Production-Grade"?
+
+Because it's designed around failure, not the happy path.
+
+The LangGraph agentic loop grades every retrieved chunk for relevance before 
+it reaches the LLM. Poor retrieval triggers a query rewrite and retry, not 
+a hallucinated answer. Every request is traced in Langfuse across embed → 
+retrieve → generate so you know exactly where latency lives. Redis caches 
+responses at ~100ms. Airflow ingests new arXiv papers daily with zero manual 
+intervention. A /health endpoint monitors all services simultaneously.
+
+These aren't features. They're the properties that make a system trustworthy 
+at runtime.
+
+## How Is It Different From NotebookLM?
+
+NotebookLM is a product, a black box you hand documents to and hope for the 
+best. ScholarStream is infrastructure you own, operate, and can inspect down 
+to the individual chunk.
+
+You can't tune NotebookLM's retrieval. You can't trace why it returned what 
+it returned. You can't run it offline, hit it via API, or swap the model. 
+Here, every one of those things is possible because the entire stack is 
+open, local, and yours.
+
+The target user is different too: this is built for engineers who need to 
+understand *why* they got an answer, not just *what* it was.
 
 ## Architecture
 
