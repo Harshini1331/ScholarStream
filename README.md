@@ -22,17 +22,16 @@ self-hosted and starts with one command.
 
 ## Why "Production-Grade"?
 
-Because it's designed around failure, not the happy path.
+Because three things break in every RAG demo and this handles all three.
 
-The LangGraph agentic loop grades every retrieved chunk for relevance before 
-it reaches the LLM. Poor retrieval triggers a query rewrite and retry, not 
-a hallucinated answer. Every request is traced in Langfuse across embed → 
-retrieve → generate so you know exactly where latency lives. Redis caches 
-responses at ~100ms. Airflow ingests new arXiv papers daily with zero manual 
-intervention. A /health endpoint monitors all services simultaneously.
+Retrieved chunks aren't relevant? The LangGraph loop rewrites the query 
+and retries instead of hallucinating. Same query runs twice? Redis returns 
+it in ~100ms from cache. Something goes wrong in production? Langfuse 
+traces every request across embed → retrieve → generate so you know 
+exactly where and why.
 
-These aren't features. They're the properties that make a system trustworthy 
-at runtime.
+The rest, daily Airflow ingestion, a /health endpoint, one-command 
+Docker setup means the system runs itself and tells you when it doesn't.
 
 ## How Is It Different From NotebookLM?
 
